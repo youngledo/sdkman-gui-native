@@ -1,0 +1,37 @@
+{
+  "productName": "SDKMAN GUI",
+  "version": "1.0.0",
+  "identifier": "io.sdkman.gui",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SDKMAN GUI",
+        "width": 1200,
+        "height": 900,
+        "minWidth": 1200,
+        "minHeight": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": false
+  }
+}

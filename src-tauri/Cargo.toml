@@ -1,0 +1,31 @@
+[package]
+name = "sdkman-gui"
+version = "1.0.0"
+description = "A Tauri-based Native Desktop App for SDKMAN"
+authors = ["HuangXiao"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.5.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.9.3", features = ["tray-icon"] }
+tauri-plugin-shell = "2.3.3"
+tauri-plugin-dialog = "2.4.2"
+tauri-plugin-single-instance = "2.0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+regex = "1.10"
+futures-util = "0.3"
+lazy_static = "1.4"
+anyhow = "1.0"
+dirs = "5.0"
+zip = "2.1"
+tar = "0.4"
+flate2 = "1.0"
+
+[features]
+# This feature is used for production builds or when a debug build with stripping is needed.
+custom-protocol = ["tauri/custom-protocol"]

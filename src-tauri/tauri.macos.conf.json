@@ -1,0 +1,28 @@
+{
+  "bundle": {
+    "targets": [
+      "dmg"
+    ],
+    "category": "public.app-category.developer-tools",
+    "macOS": {
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        },
+        "windowSize": {
+          "height": 400,
+          "width": 660
+        },
+        "windowPosition": {
+          "x": 200,
+          "y": 180
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,375 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: aarch64  # Apple Silicon
+          # 如果需要支持 Intel Mac，取消注释下面两行
+          # - os: macos-13
+          #   arch: x86_64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build Tauri app
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Rename macOS artifacts
+        run: |
+          # Rename DMG files from "SDKMAN GUI" to "sdkman-gui"
+          for file in src-tauri/target/release/bundle/dmg/SDKMAN\ GUI*.dmg; do
+            if [ -f "$file" ]; then
+              newname=$(echo "$file" | sed 's/SDKMAN GUI/sdkman-gui/g')
+              mv "$file" "$newname"
+              echo "Renamed: $(basename "$newname")"
+            fi
+          done
+
+      - name: Prepare macOS artifacts
+        id: prepare
+        run: |
+          # 查找生成的 DMG 文件
+          DMG_FILE=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" | head -n 1)
+
+          if [ -z "$DMG_FILE" ]; then
+            echo "Error: DMG file not found"
+            exit 1
+          fi
+
+          # 计算 SHA256
+          SHA256=$(shasum -a 256 "$DMG_FILE" | awk '{print $1}')
+          BASENAME=$(basename "$DMG_FILE")
+
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "dmg_file=$DMG_FILE" >> $GITHUB_OUTPUT
+          echo "basename=$BASENAME" >> $GITHUB_OUTPUT
+          echo "SHA256 ($BASENAME): $SHA256"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: ${{ steps.prepare.outputs.dmg_file }}
+          retention-days: 1
+          compression-level: 0
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get version from tag
+        id: get_version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build Tauri app
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Rename Windows artifacts
+        shell: bash
+        run: |
+          # Rename MSI files from "SDKMAN GUI" to "sdkman-gui" and remove language suffix
+          for file in src-tauri/target/release/bundle/msi/SDKMAN\ GUI*.msi; do
+            if [ -f "$file" ]; then
+              # Remove "SDKMAN GUI" and language suffix like "_en-US" or "_x64_en-US"
+              newname=$(echo "$file" | sed 's/SDKMAN GUI/sdkman-gui/g' | sed 's/_en-US//g')
+              mv "$file" "$newname"
+              echo "Renamed: $(basename "$newname")"
+            fi
+          done
+
+      - name: Prepare Windows artifacts
+        id: prepare
+        shell: bash
+        run: |
+          # 查找 MSI 文件
+          MSI_FILE=$(find src-tauri/target/release/bundle/msi -name "*.msi" 2>/dev/null | head -n 1)
+
+          if [ -z "$MSI_FILE" ]; then
+            echo "Error: MSI file not found"
+            exit 1
+          fi
+
+          SHA256=$(powershell -Command "Get-FileHash -Algorithm SHA256 '$MSI_FILE' | Select-Object -ExpandProperty Hash" | tr '[:upper:]' '[:lower:]')
+          BASENAME=$(basename "$MSI_FILE")
+          echo "msi_file=$MSI_FILE" >> $GITHUB_OUTPUT
+          echo "msi_basename=$BASENAME" >> $GITHUB_OUTPUT
+          echo "msi_sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "MSI SHA256 ($BASENAME): $SHA256"
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: ${{ steps.prepare.outputs.msi_file }}
+          retention-days: 1
+          compression-level: 0
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build Tauri app
+        run: npm run tauri build
+
+      - name: Rename Linux artifacts
+        run: |
+          # Rename DEB files from "SDKMAN GUI" to "sdkman-gui"
+          for file in src-tauri/target/release/bundle/deb/SDKMAN\ GUI*.deb; do
+            if [ -f "$file" ]; then
+              newname=$(echo "$file" | sed 's/SDKMAN GUI/sdkman-gui/g')
+              mv "$file" "$newname"
+              echo "Renamed: $(basename "$newname")"
+            fi
+          done
+
+          # Rename RPM files from "SDKMAN GUI" to "sdkman-gui"
+          for file in src-tauri/target/release/bundle/rpm/SDKMAN\ GUI*.rpm; do
+            if [ -f "$file" ]; then
+              newname=$(echo "$file" | sed 's/SDKMAN GUI/sdkman-gui/g')
+              mv "$file" "$newname"
+              echo "Renamed: $(basename "$newname")"
+            fi
+          done
+
+      - name: Prepare Linux artifacts
+        id: prepare
+        run: |
+          # 查找 DEB 文件
+          DEB_FILE=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -n 1)
+
+          # 查找 RPM 文件
+          RPM_FILE=$(ls src-tauri/target/release/bundle/rpm/*.rpm 2>/dev/null | head -n 1)
+
+          if [ -z "$DEB_FILE" ] && [ -z "$RPM_FILE" ]; then
+            echo "Error: No DEB or RPM files found"
+            exit 1
+          fi
+
+          if [ -n "$DEB_FILE" ]; then
+            DEB_SHA256=$(sha256sum "$DEB_FILE" | awk '{print $1}')
+            DEB_BASENAME=$(basename "$DEB_FILE")
+            echo "deb_file=$DEB_FILE" >> $GITHUB_OUTPUT
+            echo "deb_basename=$DEB_BASENAME" >> $GITHUB_OUTPUT
+            echo "deb_sha256=$DEB_SHA256" >> $GITHUB_OUTPUT
+            echo "DEB SHA256 ($DEB_BASENAME): $DEB_SHA256"
+          fi
+
+          if [ -n "$RPM_FILE" ]; then
+            RPM_SHA256=$(sha256sum "$RPM_FILE" | awk '{print $1}')
+            RPM_BASENAME=$(basename "$RPM_FILE")
+            echo "rpm_file=$RPM_FILE" >> $GITHUB_OUTPUT
+            echo "rpm_basename=$RPM_BASENAME" >> $GITHUB_OUTPUT
+            echo "rpm_sha256=$RPM_SHA256" >> $GITHUB_OUTPUT
+            echo "RPM SHA256 ($RPM_BASENAME): $RPM_SHA256"
+          fi
+
+      - name: Upload DEB artifact
+        if: steps.prepare.outputs.deb_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: ${{ steps.prepare.outputs.deb_file }}
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload RPM artifact
+        if: steps.prepare.outputs.rpm_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: ${{ steps.prepare.outputs.rpm_file }}
+          retention-days: 1
+          compression-level: 0
+
+  create-release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded files
+        run: |
+          echo "Downloaded files:"
+          ls -R artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ## ✨ Features
+
+            - 🎨 **Modern UI** - Beautiful Tauri-based native interface
+            - 🌍 **Internationalization** - Support for English and Chinese with automatic system language detection
+            - 🌗 **Theme Switching** - Support for light/dark/auto themes
+            - 📦 **JDK Management** - Browse, install, uninstall, and switch JDK versions
+            - 🛠️ **SDK Management** - Manage various development SDKs
+            - 🔍 **Search & Filter** - Quickly find the JDKs and SDKs you need
+            - 🏷️ **Category Browsing** - View SDKs by category
+            - ⚙️ **Configuration Management** - Flexible application configuration with proxy support
+
+            ## ✨ 特性
+
+            - 🎨 **现代化UI** - 基于Tauri的精美原生界面
+            - 🌍 **国际化支持** - 支持中英文，自动检测系统语言
+            - 🌗 **主题切换** - 支持亮色/暗色/自动主题
+            - 📦 **JDK管理** - 浏览、安装、卸载、切换JDK版本
+            - 🛠️ **SDK管理** - 管理各种开发工具SDK
+            - 🔍 **搜索过滤** - 快速查找所需的JDK和SDK
+            - 🏷️ **分类浏览** - 按类别查看SDK
+            - ⚙️ **配置管理** - 灵活的应用配置，支持代理设置
+
+            ---
+
+            ### 📦 Installation
+
+            #### macOS
+
+            - Download the DMG file for your architecture
+            - Open the DMG and drag the app to Applications folder
+            - **Important**: If you see "app is damaged" error, run:
+              ```bash
+              xattr -cr /Applications/SDKMAN\ GUI.app
+              ```
+
+            #### Windows
+
+            - Download the `.msi` file
+            - Double-click to install
+
+            #### Linux
+
+            **Debian/Ubuntu (.deb):**
+            ```bash
+            # Download the .deb file, then:
+            sudo dpkg -i sdkman-gui_${{ steps.get_version.outputs.VERSION }}_amd64.deb
+            # If dependencies missing:
+            sudo apt-get install -f
+            ```
+
+            **Red Hat/Fedora (.rpm):**
+            ```bash
+            # Fedora/RHEL 8+:
+            sudo dnf install sdkman-gui-${{ steps.get_version.outputs.VERSION }}-1.x86_64.rpm
+
+            # Or RHEL 7/CentOS:
+            sudo yum install sdkman-gui-${{ steps.get_version.outputs.VERSION }}-1.x86_64.rpm
+            ```
+
+            ---
+
+            ### ⚠️ Prerequisites
+
+            **SDKMAN must be installed first:**
+            ```bash
+            curl -s "https://get.sdkman.io" | bash
+            ```
+
+            ### 📋 Supported Platforms
+
+            - **macOS**: Monterey (12.0) or later (Apple Silicon)
+            - **Windows**: Windows 10/11 (x64)
+            - **Linux**: Debian/Ubuntu (.deb) and Red Hat/Fedora (.rpm)
+
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.msi
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
