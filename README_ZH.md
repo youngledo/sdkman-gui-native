@@ -1,5 +1,7 @@
 # SDKMAN GUI
 
+JavaFX版本，请看：[sdkman-gui](https://github.com/youngledo/sdkman-gui)。
+
 [English](README.md) | **中文**
 
 跨平台桌面应用，基于**Tauri + Vue + Rust**开发，为[SDKMAN](https://github.com/sdkman)提供优雅的图形化界面。
