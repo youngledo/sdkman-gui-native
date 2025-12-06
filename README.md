@@ -1,5 +1,7 @@
 # SDKMAN GUI
 
+For the JavaFX version, please refer to: [sdkman-gui](https://github.com/youngledo/sdkman-gui).
+
 **English** | [中文](README_ZH.md)
 
 Cross-platform desktop application built with **Tauri + Vue + Rust**, offering an elegant GUI interface for [SDKMAN](https://github.com/sdkman).
