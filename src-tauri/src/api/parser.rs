@@ -10,9 +10,12 @@ lazy_static! {
         r"(?s)---\r*\n(.+?)\r*\n\r*\n(.*?)\$ sdk install(.*?)\r*\n"
     ).unwrap();
 
-    /// 正则表达式：解析Java版本表格（带|分隔符）
-    static ref JAVA_VERSION_PATTERN: Regex = Regex::new(
-        r"(.*?)\|(.*?)\|(.*?)\|(.*?)\|(.*?)\|(.*)"
+    /// 正则表达式：检测Java版本表格（表头以"Vendor |"开头）
+    /// SDKMAN API返回过两种列格式，解析时需同时兼容：
+    /// - 4列（现行）：Vendor | Use | Version | Identifier
+    /// - 6列（旧版）：Vendor | Use | Version | Dist | Status | Identifier
+    static ref JAVA_TABLE_HEADER_PATTERN: Regex = Regex::new(
+        r"(?m)^\s*Vendor\s*\|"
     ).unwrap();
 }
 
@@ -95,8 +98,8 @@ impl ResponseParser {
             return Ok(vec![]);
         }
 
-        // 检测是Java格式还是其他格式
-        if JAVA_VERSION_PATTERN.is_match(response) && response.contains(VENDOR_HEADER_NAME) {
+        // 检测是Java格式还是其他格式（Java格式表头以"Vendor |"开头）
+        if JAVA_TABLE_HEADER_PATTERN.is_match(response) {
             // Java格式：带|分隔符的表格
             Self::parse_java_versions(response, candidate)
         } else {
@@ -106,17 +109,30 @@ impl ResponseParser {
     }
 
     /// 解析Java版本（表格格式，|分隔）
-    /// 格式: Vendor | Use | Version | Dist | Status | Identifier
+    /// 兼容两种列格式：
+    /// - 4列（现行）：Vendor | Use | Version | Identifier
+    /// - 6列（旧版）：Vendor | Use | Version | Dist | Status | Identifier
+    ///
+    /// Use列标记：`>` 使用中、`*` 已安装、`+` 仅本地（已安装但远端已下架）
     fn parse_java_versions(response: &str, candidate: &str) -> Result<Vec<SdkVersion>> {
         let mut versions = Vec::new();
         let mut last_vendor: Option<String> = None;
 
-        for cap in JAVA_VERSION_PATTERN.captures_iter(response) {
-            let vendor_col = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-            let use_col = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-            let version_col = cap.get(3).map(|m| m.as_str().trim()).unwrap_or("");
-            let status_col = cap.get(5).map(|m| m.as_str().trim()).unwrap_or("");
-            let identifier_col = cap.get(6).map(|m| m.as_str().trim()).unwrap_or("");
+        for line in response.lines() {
+            // 只处理带|分隔符的数据行，分隔线/标题/图例行自然被跳过
+            let raw_cols: Vec<&str> = line.split('|').collect();
+            if raw_cols.len() < 4 {
+                continue;
+            }
+
+            let cols: Vec<String> = raw_cols.iter().map(|c| c.trim().to_string()).collect();
+
+            let vendor_col = &cols[0];
+            let use_col = &cols[1];
+            let version_col = &cols[2];
+            let identifier_col = cols.last().unwrap();
+            // 6列旧格式中Status位于第5列，4列格式状态全在Use列
+            let status_col: &str = if cols.len() >= 6 { cols[4].as_str() } else { "" };
 
             // 跳过表头
             if vendor_col == VENDOR_HEADER_NAME {
@@ -125,26 +141,29 @@ impl ResponseParser {
 
             // 处理vendor（可能为空，使用上一行的vendor）
             let vendor = if !vendor_col.is_empty() {
-                last_vendor = Some(vendor_col.to_string());
-                vendor_col.to_string()
+                last_vendor = Some(vendor_col.clone());
+                vendor_col.clone()
             } else if let Some(ref lv) = last_vendor {
                 lv.clone()
             } else {
                 String::new()
             };
 
-            // identifier 必须非��
+            // identifier 必须非空
             if identifier_col.is_empty() {
                 continue;
             }
 
-            // 解析状态
-            let is_installed = status_col.contains("installed") || use_col.contains('*');
+            // 解析状态：Use列中 > 使用中、* 已安装、+ 仅本地；旧6列格式额外检查Status列
             let is_in_use = use_col.contains('>');
+            let is_installed = is_in_use
+                || use_col.contains('*')
+                || use_col.contains('+')
+                || status_col.contains("installed");
 
             let sdk_version = SdkVersion {
-                version: version_col.to_string(),
-                identifier: identifier_col.to_string(),
+                version: version_col.clone(),
+                identifier: identifier_col.clone(),
                 vendor,
                 categories: JdkCategory::from_identifier(identifier_col),
                 candidate: candidate.to_string(),
@@ -224,5 +243,167 @@ impl ResponseParser {
         }
 
         Ok(versions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURRENT_FOUR_COLUMN_RESPONSE: &str = "\
+================================================================================
+Available Java Versions for macOS ARM 64bit
+================================================================================
+ Vendor         | Use | Version            | Identifier
+--------------------------------------------------------------------------------
+ Corretto       |     | 27.0.0             | 27.0.0-amzn
+                |     | 26.0.2             | 26.0.2-amzn
+ GraalVM CE     | > * | 25.3.4+1.r25       | 25.3.4+1.r25-graalce
+ Temurin        |   + | 26.0.1             | 26.0.1-tem
+ Zulu           |   * | 27.0.0-fx+35       | 27.0.0-fx+35-zulu
+================================================================================
+ > in use   * installed   + local only
+--------------------------------------------------------------------------------
+ $ sdk install java <Identifier>    install a specific version
+================================================================================
+";
+
+    #[test]
+    fn test_parse_current_four_column_java_format() {
+        let versions =
+            ResponseParser::parse_versions(CURRENT_FOUR_COLUMN_RESPONSE, "java").unwrap();
+
+        assert_eq!(versions.len(), 5);
+
+        // 第一行：带vendor的普通版本
+        let corretto = &versions[0];
+        assert_eq!(corretto.vendor, "Corretto");
+        assert_eq!(corretto.identifier, "27.0.0-amzn");
+        assert!(!corretto.installed);
+        assert!(!corretto.in_use);
+
+        // 第二行：vendor为空，应继承上一行的vendor
+        assert_eq!(versions[1].vendor, "Corretto", "空vendor应继承上一行的vendor");
+        assert_eq!(versions[1].identifier, "26.0.2-amzn");
+
+        // > * 使用中且已安装，graalce标识符应识别为NIK分类
+        let graalce = &versions[2];
+        assert_eq!(graalce.vendor, "GraalVM CE");
+        assert!(graalce.in_use);
+        assert!(graalce.installed);
+        assert!(graalce.categories.contains(&JdkCategory::Nik));
+
+        // + 仅本地，也应视为已安装
+        assert!(versions[3].installed, "+ local only应视为已安装");
+        assert!(!versions[3].in_use);
+
+        // * 已安装，-fx标识符应识别为JavaFX分类
+        assert!(versions[4].installed);
+        assert!(versions[4].categories.contains(&JdkCategory::JavaFx));
+    }
+
+    #[test]
+    fn test_parse_legacy_six_column_java_format() {
+        let response = "\
+================================================================================
+ Vendor      | Use | Version | Dist | Status   | Identifier
+--------------------------------------------------------------------------------
+ Temurin     |     | 21.0.2  | tem  |          | 21.0.2-tem
+             | > * | 17.0.9  | tem  | installed | 17.0.9-tem
+ Amazon      |     | 21.0.3  | amzn | installed | 21.0.3-amzn
+================================================================================
+";
+        let versions = ResponseParser::parse_versions(response, "java").unwrap();
+
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].vendor, "Temurin");
+        assert!(!versions[0].installed);
+
+        assert!(versions[1].in_use);
+        assert!(versions[1].installed, "旧格式Status列的installed标记应生效");
+
+        assert_eq!(versions[2].vendor, "Amazon");
+        assert!(versions[2].installed);
+        assert!(!versions[2].in_use);
+    }
+
+    #[test]
+    fn test_parse_other_sdk_format() {
+        // 空格分隔格式（无|分隔符）不应被误判为Java格式
+        let response = "\
+================================================================================
+Available Maven Versions for macOS ARM 64bit
+================================================================================
+ > * 3.9.9              3.9.8              3.9.7
+     3.9.6              3.9.5
+================================================================================
+";
+        let versions = ResponseParser::parse_versions(response, "maven").unwrap();
+
+        assert_eq!(versions.len(), 5);
+        assert_eq!(versions[0].version, "3.9.9");
+        assert!(versions[0].in_use);
+        assert!(versions[0].installed);
+
+        // 后续版本不应继承行首标记
+        assert!(!versions[1].installed);
+        assert!(!versions[1].in_use);
+    }
+
+    #[test]
+    fn test_parse_empty_response() {
+        assert!(ResponseParser::parse_versions("", "java").unwrap().is_empty());
+        assert!(ResponseParser::parse_versions("   ", "java").unwrap().is_empty());
+    }
+
+    /// 基于真实API完整响应（2026-09抓取）的回归测试
+    /// installed=21.0.10-tem,26.0.1-tem,25.3.4+1.r25-graalce,27.0.0-fx+35-zulu&current=25.3.4+1.r25-graalce
+    #[test]
+    fn test_parse_real_api_response() {
+        let response = include_str!("testdata/java-versions-api-response.txt");
+        let versions = ResponseParser::parse_versions(response, "java").unwrap();
+
+        assert_eq!(versions.len(), 89, "数据行总数");
+
+        // 15个供应商，且所有版本的vendor都应非空
+        let vendors: std::collections::HashSet<&str> =
+            versions.iter().map(|v| v.vendor.as_str()).collect();
+        assert_eq!(vendors.len(), 15, "供应商数量");
+        assert!(versions.iter().all(|v| !v.vendor.is_empty()));
+
+        let installed: std::collections::HashSet<&str> = versions
+            .iter()
+            .filter(|v| v.installed)
+            .map(|v| v.identifier.as_str())
+            .collect();
+        assert_eq!(
+            installed,
+            ["21.0.10-tem", "26.0.1-tem", "25.3.4+1.r25-graalce", "27.0.0-fx+35-zulu"]
+                .into_iter()
+                .collect()
+        );
+
+        let in_use: Vec<&str> = versions
+            .iter()
+            .filter(|v| v.in_use)
+            .map(|v| v.identifier.as_str())
+            .collect();
+        assert_eq!(in_use, vec!["25.3.4+1.r25-graalce"]);
+
+        assert_eq!(
+            versions.iter().filter(|v| v.categories.contains(&JdkCategory::JavaFx)).count(),
+            16,
+            "JavaFX分类数量（含.fx与-fx两种标识符形式）"
+        );
+        assert_eq!(
+            versions.iter().filter(|v| v.categories.contains(&JdkCategory::Nik)).count(),
+            11,
+            "NIK分类数量"
+        );
+
+        assert!(
+            versions.iter().all(|v| !v.version.contains('|')),
+            "不应有包含|的垃圾条目"
+        );
     }
 }

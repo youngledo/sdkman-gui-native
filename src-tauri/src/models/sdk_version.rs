@@ -67,8 +67,9 @@ impl JdkCategory {
 
         let lower = identifier.to_lowercase();
 
-        // 检查是否包含JavaFX（如 21.0.9.fx-librca, 25.0.1.fx-nik）
-        if lower.contains(".fx") {
+        // 检查是否包含JavaFX
+        // SDKMAN的JavaFX标识符有两种形式：旧版 `.fx`（如21.0.9.fx-zulu）和新版 `-fx`（如27.0.0-fx+35-zulu）
+        if lower.contains(".fx") || lower.contains("-fx") {
             categories.insert(JdkCategory::JavaFx);
         }
 
@@ -139,6 +140,26 @@ mod tests {
         let categories = JdkCategory::from_identifier("21.0.9.fx-librca");
         assert!(categories.contains(&JdkCategory::JavaFx));
         assert!(!categories.contains(&JdkCategory::Nik));
+
+        // 新版 -fx 形式的JavaFX标识符（如 27.0.0-fx+35-zulu）
+        let categories = JdkCategory::from_identifier("27.0.0-fx+35-zulu");
+        assert!(categories.contains(&JdkCategory::JavaFx), "-fx标识符应识别为JavaFX分类");
+        assert!(!categories.contains(&JdkCategory::Nik));
+
+        // 新版Liberica的JavaFX标识符（如 26.0.2-fx+1.1-librca）
+        let categories = JdkCategory::from_identifier("26.0.2-fx+1.1-librca");
+        assert!(categories.contains(&JdkCategory::JavaFx));
+        assert!(!categories.contains(&JdkCategory::Nik));
+
+        // 新版NIK的JavaFX标识符（如 25.0.4-fx+1.1.r25-nik）
+        let categories = JdkCategory::from_identifier("25.0.4-fx+1.1.r25-nik");
+        assert!(categories.contains(&JdkCategory::JavaFx));
+        assert!(categories.contains(&JdkCategory::Nik));
+
+        // -crac标识符不应被误判为JavaFX（如 27.0.0-crac+35-zulu）
+        let categories = JdkCategory::from_identifier("27.0.0-crac+35-zulu");
+        assert!(!categories.contains(&JdkCategory::JavaFx), "-crac不应识别为JavaFX分类");
+        assert!(categories.contains(&JdkCategory::Jdk));
     }
 
     #[test]
