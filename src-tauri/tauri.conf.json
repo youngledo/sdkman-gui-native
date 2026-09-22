@@ -1,6 +1,6 @@
 {
   "productName": "SDKMAN GUI",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "io.sdkman.gui",
   "build": {
     "beforeDevCommand": "npm run dev",
